@@ -108,4 +108,4 @@ jobs:
           npm pkg set name=@soundtrackio/hermes-compiler \
             version="$upstream_version-syb-${GITHUB_SHA::10}" \
             repository.url="git+https://github.com/$GITHUB_REPOSITORY.git"
-          npm publish --access public
+          npm publish --access public --tag latest
