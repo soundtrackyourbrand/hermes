@@ -1,0 +1,105 @@
+name: syb-publish-hermes-compiler
+
+# Publishes this branch's hermesc as a hermes-compiler package on a GitHub
+# release, laid out like the npm package, so a project can install it in place
+# of hermes-compiler from npm through a package manager override.
+
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  # Upstream's build-hermesc-linux.yml, with the runner's CMake: that workflow
+  # copies only CMake's binaries out of the CMake it downloads, and they find no
+  # modules without the rest of it.
+  build_hermesc_linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install dependencies
+        shell: bash
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential libreadline-dev libicu-dev
+      - name: Build HermesC for Linux
+        shell: bash
+        run: |
+          cmake -S . -B build -DHERMES_STATIC_LINK=ON -DCMAKE_BUILD_TYPE=Release -DHERMES_ENABLE_TEST_SUITE=OFF \
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=True -DCMAKE_CXX_FLAGS=-s -DCMAKE_C_FLAGS=-s \
+            -DCMAKE_EXE_LINKER_FLAGS="-Wl,--whole-archive -lpthread -Wl,--no-whole-archive"
+          cmake --build build --target hermesc -j "$(nproc)"
+          mkdir -p /tmp/hermes/linux64-bin
+          cp build/bin/hermesc /tmp/hermes/linux64-bin/.
+      - name: Upload linux artifacts
+        uses: actions/upload-artifact@v4.3.4
+        with:
+          name: hermes-linux-bin
+          path: /tmp/hermes/linux64-bin
+  build_hermesc_windows:
+    uses: ./.github/workflows/build-hermesc-windows.yml
+
+  # The npm package's macOS hermesc is a universal binary with these minimum
+  # versions.
+  build_hermesc_macos:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup xcode
+        uses: ./.github/actions/setup-xcode
+      - name: Build HermesC for macOS
+        shell: bash
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DHERMES_ENABLE_TEST_SUITE=OFF \
+            -DCMAKE_OSX_ARCHITECTURES='arm64;x86_64' -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15
+          cmake --build build --target hermesc -j "$(sysctl -n hw.ncpu)"
+          mkdir -p /tmp/hermes/osx-bin
+          cp build/bin/hermesc /tmp/hermes/osx-bin/.
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4.3.4
+        with:
+          name: hermes-osx-bin
+          path: /tmp/hermes/osx-bin
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [build_hermesc_linux, build_hermesc_windows, build_hermesc_macos]
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Download linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: hermes-linux-bin
+          path: npm/hermes-compiler/hermesc/linux64-bin
+      - name: Download windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: hermes-win64-bin
+          path: npm/hermes-compiler/hermesc/win64-bin
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: hermes-osx-bin
+          path: npm/hermes-compiler/hermesc/osx-bin
+      # The package keeps the version of the upstream release it patches. The
+      # release tag adds the commit, so every publish is a new release.
+      - name: Pack and release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd npm/hermes-compiler
+          chmod +x hermesc/linux64-bin/hermesc hermesc/osx-bin/hermesc
+          version="$(node -p "require('./package.json').version")"
+          tag="hermes-compiler-v$version-syb.${GITHUB_SHA::10}"
+          npm pack
+          mv hermes-compiler-*.tgz /tmp/hermes-compiler.tgz
+          gh release create "$tag" /tmp/hermes-compiler.tgz \
+            --target "$GITHUB_SHA" \
+            --title "$tag" \
+            --notes "hermesc from $GITHUB_REF_NAME at $GITHUB_SHA."
