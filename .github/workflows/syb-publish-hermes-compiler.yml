@@ -1,8 +1,9 @@
 name: syb-publish-hermes-compiler
 
-# Publishes this branch's hermesc as a hermes-compiler package on a GitHub
-# release, laid out like the npm package, so a project can install it in place
-# of hermes-compiler from npm through a package manager override.
+# Publishes this branch's hermesc to npm as @soundtrackio/hermes-compiler, laid
+# out like hermes-compiler, so a project can install it in its place through a
+# package manager alias. npm trusts this workflow by its filename to publish
+# the package.
 
 on: workflow_dispatch
 
@@ -67,10 +68,19 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build_hermesc_linux, build_hermesc_windows, build_hermesc_macos]
     permissions:
-      contents: write
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Setup node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # Trusted publishing needs npm 11.5.1 or newer.
+      - name: Update npm
+        shell: bash
+        run: npm install -g npm@latest
       - name: Download linux artifacts
         uses: actions/download-artifact@v4
         with:
@@ -86,20 +96,16 @@ jobs:
         with:
           name: hermes-osx-bin
           path: npm/hermes-compiler/hermesc/osx-bin
-      # The package keeps the version of the upstream release it patches. The
-      # release tag adds the commit, so every publish is a new release.
-      - name: Pack and release
+      # The version is the upstream release it patches, with the commit as a
+      # prerelease so every publish is new. npm's provenance check needs the
+      # repository to be the one publishing.
+      - name: Publish to npm
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           cd npm/hermes-compiler
           chmod +x hermesc/linux64-bin/hermesc hermesc/osx-bin/hermesc
-          version="$(node -p "require('./package.json').version")"
-          tag="hermes-compiler-v$version-syb.${GITHUB_SHA::10}"
-          npm pack
-          mv hermes-compiler-*.tgz /tmp/hermes-compiler.tgz
-          gh release create "$tag" /tmp/hermes-compiler.tgz \
-            --target "$GITHUB_SHA" \
-            --title "$tag" \
-            --notes "hermesc from $GITHUB_REF_NAME at $GITHUB_SHA."
+          upstream_version="$(node -p "require('./package.json').version")"
+          npm pkg set name=@soundtrackio/hermes-compiler \
+            version="$upstream_version-syb-${GITHUB_SHA::10}" \
+            repository.url="git+https://github.com/$GITHUB_REPOSITORY.git"
+          npm publish --access public
